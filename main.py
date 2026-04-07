@@ -56,7 +56,8 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    import fitz  # PyMuPDF
+    import fitz
+    from concurrent.futures import ThreadPoolExecutor
     parts = []
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     for page in doc:
@@ -70,19 +71,30 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
     
     try:
         import pytesseract
-        ocr_parts = []
+        
+        # Renderiza imagens sequencialmente (thread-safe)
+        images = []
         for page in doc:
             pix = page.get_pixmap(dpi=150)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
+        doc.close()
+        
+        # OCR em paralelo (Tesseract é thread-safe)
+        def ocr_image(img):
             text = pytesseract.image_to_string(img, lang="por")
             clean = text.strip()
             if not clean or len(clean) < 20:
-                continue
+                return None
             if clean.count('X') / max(len(clean), 1) > 0.5:
-                continue
-            ocr_parts.append(clean)
+                return None
+            return clean
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(ocr_image, images))
+        
+        ocr_parts = [r for r in results if r]
         if ocr_parts:
-            doc.close()
             return "\n".join(ocr_parts)
     except Exception:
         pass
