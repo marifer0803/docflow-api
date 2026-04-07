@@ -64,21 +64,23 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         if text and text.strip():
             parts.append(text.strip())
     
-    # Se extraiu texto suficiente, retorna
     if len("\n".join(parts)) > 50:
         doc.close()
         return "\n".join(parts)
     
-    # Fallback: renderiza páginas como imagem e faz OCR
     try:
         import pytesseract
         ocr_parts = []
         for page in doc:
-            pix = page.get_pixmap(dpi=300)
+            pix = page.get_pixmap(dpi=150)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             text = pytesseract.image_to_string(img, lang="por")
-            if text and text.strip():
-                ocr_parts.append(text.strip())
+            clean = text.strip()
+            if not clean or len(clean) < 20:
+                continue
+            if clean.count('X') / max(len(clean), 1) > 0.5:
+                continue
+            ocr_parts.append(clean)
         if ocr_parts:
             doc.close()
             return "\n".join(ocr_parts)
