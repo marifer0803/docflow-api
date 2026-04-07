@@ -63,19 +63,29 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         text = page.get_text()
         if text and text.strip():
             parts.append(text.strip())
+    
+    # Se extraiu texto suficiente, retorna
+    if len("\n".join(parts)) > 50:
+        doc.close()
+        return "\n".join(parts)
+    
+    # Fallback: renderiza páginas como imagem e faz OCR
+    try:
+        import pytesseract
+        ocr_parts = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=300)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            text = pytesseract.image_to_string(img, lang="por")
+            if text and text.strip():
+                ocr_parts.append(text.strip())
+        if ocr_parts:
+            doc.close()
+            return "\n".join(ocr_parts)
+    except Exception:
+        pass
+    
     doc.close()
-    
-    # Fallback pro pdfplumber se PyMuPDF não extraiu
-    if not parts:
-        try:
-            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        parts.append(text)
-        except Exception:
-            pass
-    
     return "\n".join(parts)
 
 
