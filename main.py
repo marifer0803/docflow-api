@@ -56,18 +56,26 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
+    import fitz  # PyMuPDF
     parts = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                parts.append(text)
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    row_text = " | ".join(str(cell or "").strip() for cell in row if cell)
-                    if row_text:
-                        parts.append(row_text)
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    for page in doc:
+        text = page.get_text()
+        if text and text.strip():
+            parts.append(text.strip())
+    doc.close()
+    
+    # Fallback pro pdfplumber se PyMuPDF não extraiu
+    if not parts:
+        try:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        parts.append(text)
+        except Exception:
+            pass
+    
     return "\n".join(parts)
 
 
