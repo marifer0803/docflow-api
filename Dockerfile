@@ -13,4 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
 EXPOSE 8000
+ENV SUPABASE_URL=https://bleatingparrot-supabase.cloudfy.live
+ENV SUPABASE_SERVICE_KEY=COLE_A_KEY_AQUI
+ENV STORAGE_BUCKET=generated
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
