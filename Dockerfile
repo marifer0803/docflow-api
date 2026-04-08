@@ -14,6 +14,6 @@ COPY main.py .
 
 EXPOSE 8000
 ENV SUPABASE_URL=https://bleatingparrot-supabase.cloudfy.live
-ENV SUPABASE_SERVICE_KEY=COLE_A_KEY_AQUI
+ENV SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NjA3NDczNDgsImV4cCI6MTc5MjI4MzM0OH0.erP_tL_hkgGJPRPXWsNrkri9fAiaqbALtZUGg5B8htk
 ENV STORAGE_BUCKET=generated
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
