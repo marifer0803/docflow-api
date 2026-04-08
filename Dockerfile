@@ -15,4 +15,5 @@ COPY main.py .
 EXPOSE 8000
 ENV SUPABASE_URL=https://bleatingparrot-supabase.cloudfy.live
 ENV STORAGE_BUCKET=generated
+ENV TEMPLATES_BUCKET=templates
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
