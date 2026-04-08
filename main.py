@@ -38,6 +38,15 @@ STORAGE_BUCKET = os.getenv("STORAGE_BUCKET", "generated")
 def health():
     return {"status": "ok"}
 
+@app.get("/debug-env")
+def debug_env():
+    return {
+        "supabase_url_set": bool(SUPABASE_URL),
+        "supabase_key_set": bool(SUPABASE_KEY),
+        "supabase_url_preview": SUPABASE_URL[:30] if SUPABASE_URL else "empty",
+        "bucket": STORAGE_BUCKET
+    }
+
 
 # ─── EXTRACT TEXT ─────────────────────────────────────────
 
