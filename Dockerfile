@@ -6,10 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-por \
     && rm -rf /var/lib/apt/lists/*
-    libreoffice-writer \
-    tesseract-ocr \
-    tesseract-ocr-por \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
