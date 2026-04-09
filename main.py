@@ -19,7 +19,7 @@ import pdfplumber
 from PIL import Image
 import httpx
 
-app = FastAPI(title="DocFlow API", version="2.1.0")
+app = FastAPI(title="DocFlow API", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -281,25 +281,33 @@ def apply_markers_to_docx(docx_path: str, fields: list) -> tuple:
 
     def replace_in_paragraph(paragraph):
         nonlocal count
+        # First pass: try replacing in individual runs (preserves formatting)
         for old_text, new_text in replacements:
-            # Try in individual runs first
             for run in paragraph.runs:
                 if old_text in run.text:
                     run.text = run.text.replace(old_text, new_text)
                     count += 1
-                    debug_log.append(f"RUN_MATCH: [{old_text[:30]}] -> [{new_text}]")
-                    return
+                    debug_log.append(f"RUN: [{old_text[:30]}] -> [{new_text}]")
 
-            # Fallback: try in full paragraph text
-            full_text = "".join(run.text for run in paragraph.runs)
-            if old_text in full_text:
-                new_full = full_text.replace(old_text, new_text)
-                if paragraph.runs:
-                    paragraph.runs[0].text = new_full
-                    for run in paragraph.runs[1:]:
-                        run.text = ""
+        # Second pass: for texts split across runs, merge and replace
+        full_text = "".join(run.text for run in paragraph.runs)
+        needs_merge = False
+        for old_text, new_text in replacements:
+            if old_text in full_text and "{{" + old_text.split("{{")[-1] not in full_text:
+                needs_merge = True
+                break
+
+        if needs_merge:
+            merged = "".join(run.text for run in paragraph.runs)
+            for old_text, new_text in replacements:
+                if old_text in merged:
+                    merged = merged.replace(old_text, new_text)
                     count += 1
-                    debug_log.append(f"FULL_MATCH: [{old_text[:30]}] -> [{new_text}]")
+                    debug_log.append(f"MERGE: [{old_text[:30]}] -> [{new_text}]")
+            if paragraph.runs:
+                paragraph.runs[0].text = merged
+                for run in paragraph.runs[1:]:
+                    run.text = ""
 
     def process_paragraphs(paragraphs):
         for para in paragraphs:
@@ -355,9 +363,7 @@ async def apply_markers(
             "debug_num_fields": num_fields,
             "debug_num_rules": num_rules,
             "debug_num_replacements": num_replacements,
-            "debug_log": debug_log[:20],
-            "debug_filename": template_filename,
-            "debug_filesize": len(template_bytes),
+            "debug_log": debug_log[:30],
         }
 
         if SUPABASE_URL and SUPABASE_KEY:
