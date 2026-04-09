@@ -148,7 +148,7 @@ async def extract_text(file: UploadFile = File(...)):
 
 def pdf_to_docx(pdf_path: str, output_dir: str) -> str:
     result = subprocess.run(
-        ["libreoffice", "--headless", "--convert-to", "docx", "--outdir", output_dir, pdf_path],
+        ["libreoffice", "--headless", "--infilter=writer_pdf_import", "--convert-to", "docx", "--outdir", output_dir, pdf_path],
         capture_output=True, text=True, timeout=120,
     )
     docx_name = Path(pdf_path).stem + ".docx"
