@@ -19,7 +19,7 @@ import pdfplumber
 from PIL import Image
 import httpx
 
-app = FastAPI(title="DocFlow API", version="2.0.0")
+app = FastAPI(title="DocFlow API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -260,7 +260,7 @@ async def upload_to_supabase(file_bytes: bytes, path: str, content_type: str, bu
 
 # ─── APPLY MARKERS ────────────────────────────────────────
 
-def apply_markers_to_docx(docx_path: str, fields: list) -> str:
+def apply_markers_to_docx(docx_path: str, fields: list) -> tuple:
     doc = DocxDocument(docx_path)
 
     replacements = []
@@ -276,12 +276,21 @@ def apply_markers_to_docx(docx_path: str, fields: list) -> str:
 
     replacements.sort(key=lambda x: len(x[0]), reverse=True)
 
+    debug_log = []
+    count = 0
+
     def replace_in_paragraph(paragraph):
+        nonlocal count
         for old_text, new_text in replacements:
+            # Try in individual runs first
             for run in paragraph.runs:
                 if old_text in run.text:
                     run.text = run.text.replace(old_text, new_text)
+                    count += 1
+                    debug_log.append(f"RUN_MATCH: [{old_text[:30]}] -> [{new_text}]")
+                    return
 
+            # Fallback: try in full paragraph text
             full_text = "".join(run.text for run in paragraph.runs)
             if old_text in full_text:
                 new_full = full_text.replace(old_text, new_text)
@@ -289,6 +298,8 @@ def apply_markers_to_docx(docx_path: str, fields: list) -> str:
                     paragraph.runs[0].text = new_full
                     for run in paragraph.runs[1:]:
                         run.text = ""
+                    count += 1
+                    debug_log.append(f"FULL_MATCH: [{old_text[:30]}] -> [{new_text}]")
 
     def process_paragraphs(paragraphs):
         for para in paragraphs:
@@ -309,7 +320,7 @@ def apply_markers_to_docx(docx_path: str, fields: list) -> str:
 
     output_path = docx_path.replace(".docx", "_marked.docx")
     doc.save(output_path)
-    return output_path
+    return output_path, len(replacements), count, len(fields), debug_log
 
 
 @app.post("/apply-markers")
@@ -334,12 +345,20 @@ async def apply_markers(
             f.write(template_bytes)
 
         docx_path = ensure_docx(template_path, tmpdir)
-        marked_path = apply_markers_to_docx(docx_path, fields_list)
+        marked_path, num_rules, num_replacements, num_fields, debug_log = apply_markers_to_docx(docx_path, fields_list)
 
         with open(marked_path, "rb") as f:
             marked_bytes = f.read()
 
-        result = {"template_id": template_id}
+        result = {
+            "template_id": template_id,
+            "debug_num_fields": num_fields,
+            "debug_num_rules": num_rules,
+            "debug_num_replacements": num_replacements,
+            "debug_log": debug_log[:20],
+            "debug_filename": template_filename,
+            "debug_filesize": len(template_bytes),
+        }
 
         if SUPABASE_URL and SUPABASE_KEY:
             await ensure_bucket(TEMPLATES_BUCKET)
@@ -349,7 +368,6 @@ async def apply_markers(
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 bucket=TEMPLATES_BUCKET,
             )
-            # Salva o DOCX original tambem (pra referencia)
             with open(docx_path, "rb") as f:
                 original_bytes = f.read()
             original_path = f"{project_id}/{template_id}/original.docx"
