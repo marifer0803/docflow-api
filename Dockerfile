@@ -2,6 +2,11 @@ FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
+    default-jre \
+    tesseract-ocr \
+    tesseract-ocr-por \
+    && rm -rf /var/lib/apt/lists/*
+    libreoffice-writer \
     tesseract-ocr \
     tesseract-ocr-por \
     && rm -rf /var/lib/apt/lists/*
