@@ -75,10 +75,8 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         text = page.get_text()
         if text and text.strip():
             parts.append(text.strip())
-
-    if len("\n".join(parts)) > 50:
-        doc.close()
-        return "\n".join(parts)
+    doc.close()
+    return "\n".join(parts)
 
     try:
         import pytesseract
