@@ -19,7 +19,7 @@ import pdfplumber
 from PIL import Image
 import httpx
 
-app = FastAPI(title="DocFlow API", version="2.3.0")
+app = FastAPI(title="DocFlow API", version="2.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,20 +71,28 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         doc.close()
         return combined
 
-    # OCR fallback: apenas primeiras 5 paginas, 72 DPI
+    # OCR fallback: TODAS as paginas, 72 DPI, paralelo
     try:
         import pytesseract
-        max_pages = min(len(doc), 5)
-        ocr_parts = []
-        for i in range(max_pages):
-            pix = doc[i].get_pixmap(dpi=72)
+        images = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=72)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
+        doc.close()
+
+        def ocr_image(img):
             text = pytesseract.image_to_string(img, lang="por")
             clean = text.strip()
-            if clean and len(clean) > 20:
-                ocr_parts.append(clean)
+            if not clean or len(clean) < 20:
+                return None
+            return clean
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(ocr_image, images))
+
+        ocr_parts = [r for r in results if r]
         if ocr_parts:
-            doc.close()
             return "\n".join(ocr_parts)
     except Exception:
         pass
