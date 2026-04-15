@@ -5,6 +5,7 @@ import re
 import subprocess
 import tempfile
 import shutil
+import base64
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,7 +20,7 @@ import pdfplumber
 from PIL import Image
 import httpx
 
-app = FastAPI(title="DocFlow API", version="2.4.0")
+app = FastAPI(title="DocFlow API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +33,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 STORAGE_BUCKET = os.getenv("STORAGE_BUCKET", "generated")
 TEMPLATES_BUCKET = os.getenv("TEMPLATES_BUCKET", "templates")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 
 # ─── HEALTH ───────────────────────────────────────────────
@@ -57,7 +59,8 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
     return "\n".join(parts)
 
 
-def extract_text_from_pdf(file_bytes: bytes) -> str:
+def extract_text_from_pdf_fast(file_bytes: bytes) -> str:
+    """Fast path: PyMuPDF text extraction only. No OCR."""
     import fitz
     parts = []
     doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -65,40 +68,82 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         text = page.get_text()
         if text and text.strip():
             parts.append(text.strip())
-
-    combined = "\n".join(parts)
-    if len(combined) > 50:
-        doc.close()
-        return combined
-
-    # OCR fallback: TODAS as paginas, 72 DPI, paralelo
-    try:
-        import pytesseract
-        images = []
-        for page in doc:
-            pix = page.get_pixmap(dpi=72)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
-        doc.close()
-
-        def ocr_image(img):
-            text = pytesseract.image_to_string(img, lang="por")
-            clean = text.strip()
-            if not clean or len(clean) < 20:
-                return None
-            return clean
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            results = list(executor.map(ocr_image, images))
-
-        ocr_parts = [r for r in results if r]
-        if ocr_parts:
-            return "\n".join(ocr_parts)
-    except Exception:
-        pass
-
     doc.close()
-    return combined
+    return "\n".join(parts)
+
+
+async def ocr_pdf_with_gemini(file_bytes: bytes) -> str:
+    """OCR via Gemini Vision API. Sends the PDF directly — no image conversion."""
+
+    b64_pdf = base64.b64encode(file_bytes).decode("utf-8")
+
+    parts = [
+        {
+            "inline_data": {
+                "mime_type": "application/pdf",
+                "data": b64_pdf
+            }
+        },
+        {
+            "text": (
+                "Extraia TODO o texto visivel neste documento PDF. "
+                "Retorne apenas o texto extraido, na ordem em que aparece, "
+                "sem comentarios, sem formatacao markdown, sem explicacoes."
+            )
+        }
+    ]
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(url, json={
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "maxOutputTokens": 65536
+            }
+        })
+
+    if resp.status_code != 200:
+        raise Exception(f"Gemini API error: {resp.status_code}")
+
+    data = resp.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise Exception("Gemini retornou sem candidates")
+
+    text_parts = []
+    for part in candidates[0].get("content", {}).get("parts", []):
+        if "text" in part:
+            text_parts.append(part["text"])
+
+    return "\n".join(text_parts).strip()
+
+
+def ocr_pdf_with_tesseract(file_bytes: bytes) -> str:
+    """Fallback OCR: Tesseract, todas as paginas, 72 DPI, paralelo."""
+    import fitz
+    import pytesseract
+
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    images = []
+    for page in doc:
+        pix = page.get_pixmap(dpi=72)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+    doc.close()
+
+    def ocr_image(img):
+        text = pytesseract.image_to_string(img, lang="por")
+        clean = text.strip()
+        if not clean or len(clean) < 20:
+            return None
+        return clean
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(ocr_image, images))
+
+    ocr_parts = [r for r in results if r]
+    return "\n".join(ocr_parts)
 
 
 def extract_text_from_image(file_bytes: bytes) -> str:
@@ -119,12 +164,24 @@ async def extract_text(file: UploadFile = File(...)):
     if filename.endswith(".docx"):
         text = extract_text_from_docx(content)
     elif filename.endswith(".pdf"):
-        text = extract_text_from_pdf(content)
+        # Fast path: PyMuPDF (instant for digital PDFs)
+        text = extract_text_from_pdf_fast(content)
+        if len(text) < 50:
+            # Scanned PDF — needs OCR
+            if GEMINI_API_KEY:
+                try:
+                    text = await ocr_pdf_with_gemini(content)
+                except Exception:
+                    # Gemini failed — fallback to Tesseract
+                    text = ocr_pdf_with_tesseract(content)
+            else:
+                # No Gemini key — use Tesseract
+                text = ocr_pdf_with_tesseract(content)
     elif filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp")):
         text = extract_text_from_image(content)
     else:
         try:
-            text = extract_text_from_pdf(content)
+            text = extract_text_from_pdf_fast(content)
         except Exception:
             try:
                 text = extract_text_from_docx(content)
@@ -373,7 +430,6 @@ async def apply_markers(
                 bucket=TEMPLATES_BUCKET,
             )
         else:
-            import base64
             result["marked_base64"] = base64.b64encode(marked_bytes).decode("utf-8")
 
         return result
@@ -444,7 +500,6 @@ async def generate(
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
             else:
-                import base64
                 result["docx_base64"] = base64.b64encode(docx_bytes).decode("utf-8")
 
         if "pdf" in requested_formats:
@@ -457,7 +512,6 @@ async def generate(
                     pdf_bytes, path, "application/pdf"
                 )
             else:
-                import base64
                 result["pdf_base64"] = base64.b64encode(pdf_bytes).decode("utf-8")
 
         return result
