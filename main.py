@@ -19,7 +19,7 @@ import pdfplumber
 from PIL import Image
 import httpx
 
-app = FastAPI(title="DocFlow API", version="2.2.0")
+app = FastAPI(title="DocFlow API", version="2.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,16 +39,6 @@ TEMPLATES_BUCKET = os.getenv("TEMPLATES_BUCKET", "templates")
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-@app.get("/debug-env")
-def debug_env():
-    return {
-        "supabase_url_set": bool(SUPABASE_URL),
-        "supabase_key_set": bool(SUPABASE_KEY),
-        "supabase_url_preview": SUPABASE_URL[:30] if SUPABASE_URL else "empty",
-        "bucket": STORAGE_BUCKET,
-        "templates_bucket": TEMPLATES_BUCKET,
-    }
 
 
 # ─── EXTRACT TEXT ─────────────────────────────────────────
@@ -75,38 +65,32 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         text = page.get_text()
         if text and text.strip():
             parts.append(text.strip())
-    doc.close()
-    return "\n".join(parts)
 
+    combined = "\n".join(parts)
+    if len(combined) > 50:
+        doc.close()
+        return combined
+
+    # OCR fallback: apenas primeiras 5 paginas, 72 DPI
     try:
         import pytesseract
-        images = []
-        for page in doc:
-            pix = page.get_pixmap(dpi=150)
+        max_pages = min(len(doc), 5)
+        ocr_parts = []
+        for i in range(max_pages):
+            pix = doc[i].get_pixmap(dpi=72)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
-        doc.close()
-
-        def ocr_image(img):
             text = pytesseract.image_to_string(img, lang="por")
             clean = text.strip()
-            if not clean or len(clean) < 20:
-                return None
-            if clean.count('X') / max(len(clean), 1) > 0.5:
-                return None
-            return clean
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            results = list(executor.map(ocr_image, images))
-
-        ocr_parts = [r for r in results if r]
+            if clean and len(clean) > 20:
+                ocr_parts.append(clean)
         if ocr_parts:
+            doc.close()
             return "\n".join(ocr_parts)
     except Exception:
         pass
 
     doc.close()
-    return "\n".join(parts)
+    return combined
 
 
 def extract_text_from_image(file_bytes: bytes) -> str:
