@@ -236,41 +236,6 @@ async def extract_text(file: UploadFile = File(...)):
     }
 
 
-# ─── DEBUG: RAW GEMINI RESPONSE ──────────────────────────
-# Temporary endpoint — returns the full Gemini JSON (finishReason,
-# safetyRatings, token counts, candidates) so we can see why certain
-# docs come back near-empty.
-
-@app.post("/debug/gemini-raw")
-async def debug_gemini_raw(file: UploadFile = File(...)):
-    content = await file.read()
-    b64_pdf = base64.b64encode(content).decode("utf-8")
-
-    body = {
-        "contents": [{
-            "parts": [
-                {"inline_data": {"mime_type": "application/pdf", "data": b64_pdf}},
-                {"text": (
-                    "Extraia TODO o texto visivel neste documento PDF. "
-                    "Retorne apenas o texto extraido, na ordem em que aparece, "
-                    "sem comentarios, sem formatacao markdown, sem explicacoes."
-                )},
-            ]
-        }],
-        "generationConfig": {"maxOutputTokens": 65536},
-    }
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(url, json=body)
-
-    return {
-        "status_code": resp.status_code,
-        "pdf_bytes": len(content),
-        "response": resp.json(),
-    }
-
-
 # ─── PDF TO DOCX CONVERSION ──────────────────────────────
 
 def pdf_to_docx(pdf_path: str, output_dir: str) -> str:
