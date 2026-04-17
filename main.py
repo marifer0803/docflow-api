@@ -199,6 +199,12 @@ async def extract_text(file: UploadFile = File(...)):
         elif max_image_area_ratio > 0.5:
             ocr_triggered = True
             ocr_reason = f"image_area_ratio={max_image_area_ratio:.2f} > 0.5"
+        elif chars_per_page < 500 and max_image_area_ratio > 0.2:
+            ocr_triggered = True
+            ocr_reason = (
+                f"chars_per_page={chars_per_page:.0f} < 500 AND "
+                f"image_area_ratio={max_image_area_ratio:.2f} > 0.2"
+            )
 
         if ocr_triggered:
             if GEMINI_API_KEY:
