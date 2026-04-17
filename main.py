@@ -58,27 +58,37 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
 
 
 def extract_text_from_pdf_fast(file_bytes: bytes):
-    """Fast path: PyMuPDF text extraction only. Returns (text, page_count)."""
+    """Fast path: PyMuPDF text extraction only.
+    Returns (text, page_count, max_image_area_ratio).
+
+    max_image_area_ratio = the highest fraction of page area covered by images
+    across all pages. Signals scanned PDFs or image-heavy docs (CNH, certidões)
+    where the real data is inside images and not in the text layer.
+    """
     import fitz
     parts = []
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     page_count = len(doc)
+    max_image_area_ratio = 0.0
     for page in doc:
         text = page.get_text()
         if text and text.strip():
             parts.append(text.strip())
+        page_area = page.rect.width * page.rect.height
+        if page_area > 0:
+            image_area = 0.0
+            for info in page.get_image_info():
+                bbox = info.get("bbox")
+                if not bbox:
+                    continue
+                w = max(0.0, bbox[2] - bbox[0])
+                h = max(0.0, bbox[3] - bbox[1])
+                image_area += w * h
+            ratio = min(1.0, image_area / page_area)
+            if ratio > max_image_area_ratio:
+                max_image_area_ratio = ratio
     doc.close()
-    return "\n".join(parts), page_count
-
-
-def alphanumeric_ratio(text: str) -> float:
-    """Fraction of non-whitespace characters that are alphanumeric.
-    Garbled OCR output has a low ratio due to excess punctuation/symbols."""
-    non_ws = [c for c in text if not c.isspace()]
-    if not non_ws:
-        return 0.0
-    alnum = sum(1 for c in non_ws if c.isalnum())
-    return alnum / len(non_ws)
+    return "\n".join(parts), page_count, max_image_area_ratio
 
 
 async def ocr_pdf_with_gemini(file_bytes: bytes) -> str:
@@ -174,22 +184,21 @@ async def extract_text(file: UploadFile = File(...)):
     ocr_triggered = False
     ocr_reason = None
     pre_ocr_chars = None
-    pre_ocr_alnum_ratio = None
+    max_image_area_ratio = None
 
     if filename.endswith(".docx"):
         text = extract_text_from_docx(content)
     elif filename.endswith(".pdf"):
-        text, page_count = extract_text_from_pdf_fast(content)
+        text, page_count, max_image_area_ratio = extract_text_from_pdf_fast(content)
         pre_ocr_chars = len(text)
-        pre_ocr_alnum_ratio = alphanumeric_ratio(text)
         chars_per_page = (pre_ocr_chars / page_count) if page_count else 0
 
         if chars_per_page < 150:
             ocr_triggered = True
             ocr_reason = f"chars_per_page={chars_per_page:.0f} < 150"
-        elif pre_ocr_alnum_ratio < 0.60:
+        elif max_image_area_ratio > 0.5:
             ocr_triggered = True
-            ocr_reason = f"alphanumeric_ratio={pre_ocr_alnum_ratio:.2f} < 0.60"
+            ocr_reason = f"image_area_ratio={max_image_area_ratio:.2f} > 0.5"
 
         if ocr_triggered:
             if GEMINI_API_KEY:
@@ -203,7 +212,7 @@ async def extract_text(file: UploadFile = File(...)):
         text = extract_text_from_image(content)
     else:
         try:
-            text, page_count = extract_text_from_pdf_fast(content)
+            text, page_count, max_image_area_ratio = extract_text_from_pdf_fast(content)
         except Exception:
             try:
                 text = extract_text_from_docx(content)
@@ -217,7 +226,7 @@ async def extract_text(file: UploadFile = File(...)):
         "ocr_triggered": ocr_triggered,
         "ocr_reason": ocr_reason,
         "pre_ocr_chars": pre_ocr_chars,
-        "pre_ocr_alnum_ratio": round(pre_ocr_alnum_ratio, 3) if pre_ocr_alnum_ratio is not None else None,
+        "max_image_area_ratio": round(max_image_area_ratio, 3) if max_image_area_ratio is not None else None,
     }
 
 
