@@ -6,8 +6,13 @@ import subprocess
 import tempfile
 import shutil
 import base64
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+
+
+def _log(msg: str):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,18 +71,24 @@ def extract_text_from_pdf_fast(file_bytes: bytes):
     where the real data is inside images and not in the text layer.
     """
     import fitz
+    t0 = time.perf_counter()
     parts = []
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     page_count = len(doc)
+    t_open = time.perf_counter()
+    _log(f"[PyMuPDF] fitz.open: {(t_open - t0)*1000:.0f}ms ({page_count} pages, {len(file_bytes)} bytes)")
     max_image_area_ratio = 0.0
-    for page in doc:
+    for i, page in enumerate(doc):
+        tp0 = time.perf_counter()
         text = page.get_text()
+        tp_text = time.perf_counter()
         if text and text.strip():
             parts.append(text.strip())
         page_area = page.rect.width * page.rect.height
         if page_area > 0:
             image_area = 0.0
-            for info in page.get_image_info():
+            img_info = page.get_image_info()
+            for info in img_info:
                 bbox = info.get("bbox")
                 if not bbox:
                     continue
@@ -87,14 +98,20 @@ def extract_text_from_pdf_fast(file_bytes: bytes):
             ratio = min(1.0, image_area / page_area)
             if ratio > max_image_area_ratio:
                 max_image_area_ratio = ratio
+        tp_end = time.perf_counter()
+        _log(f"[PyMuPDF] page {i}: get_text={((tp_text-tp0))*1000:.0f}ms, image_info+calc={((tp_end-tp_text))*1000:.0f}ms, chars={len(text)}")
     doc.close()
+    _log(f"[PyMuPDF] TOTAL: {(time.perf_counter()-t0)*1000:.0f}ms")
     return "\n".join(parts), page_count, max_image_area_ratio
 
 
 async def ocr_pdf_with_gemini(file_bytes: bytes) -> str:
     """OCR via Gemini Vision API. Sends the PDF directly — no image conversion."""
 
+    t0 = time.perf_counter()
     b64_pdf = base64.b64encode(file_bytes).decode("utf-8")
+    t_b64 = time.perf_counter()
+    _log(f"[Gemini] base64 encode: {(t_b64-t0)*1000:.0f}ms ({len(b64_pdf)} chars)")
 
     parts = [
         {
@@ -114,13 +131,18 @@ async def ocr_pdf_with_gemini(file_bytes: bytes) -> str:
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
+    t_pre = time.perf_counter()
     async with httpx.AsyncClient(timeout=180) as client:
+        t_client = time.perf_counter()
+        _log(f"[Gemini] httpx client init: {(t_client-t_pre)*1000:.0f}ms")
         resp = await client.post(url, json={
             "contents": [{"parts": parts}],
             "generationConfig": {
                 "maxOutputTokens": 65536
             }
         })
+        t_resp = time.perf_counter()
+        _log(f"[Gemini] HTTP POST: {(t_resp-t_client)*1000:.0f}ms (status={resp.status_code})")
 
     if resp.status_code != 200:
         raise Exception(f"Gemini API error: {resp.status_code}")
@@ -135,7 +157,9 @@ async def ocr_pdf_with_gemini(file_bytes: bytes) -> str:
         if "text" in part:
             text_parts.append(part["text"])
 
-    return "\n".join(text_parts).strip()
+    result = "\n".join(text_parts).strip()
+    _log(f"[Gemini] TOTAL: {(time.perf_counter()-t0)*1000:.0f}ms, output_chars={len(result)}")
+    return result
 
 
 def ocr_pdf_with_tesseract(file_bytes: bytes) -> str:
@@ -143,6 +167,7 @@ def ocr_pdf_with_tesseract(file_bytes: bytes) -> str:
     import fitz
     import pytesseract
 
+    t0 = time.perf_counter()
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     images = []
     for page in doc:
@@ -150,6 +175,8 @@ def ocr_pdf_with_tesseract(file_bytes: bytes) -> str:
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         images.append(img)
     doc.close()
+    t_render = time.perf_counter()
+    _log(f"[Tesseract] render {len(images)} pages @72dpi: {(t_render-t0)*1000:.0f}ms")
 
     def ocr_image(img):
         text = pytesseract.image_to_string(img, lang="por")
@@ -160,8 +187,11 @@ def ocr_pdf_with_tesseract(file_bytes: bytes) -> str:
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         results = list(executor.map(ocr_image, images))
+    t_ocr = time.perf_counter()
+    _log(f"[Tesseract] OCR all pages: {(t_ocr-t_render)*1000:.0f}ms")
 
     ocr_parts = [r for r in results if r]
+    _log(f"[Tesseract] TOTAL: {(time.perf_counter()-t0)*1000:.0f}ms")
     return "\n".join(ocr_parts)
 
 
@@ -177,7 +207,11 @@ def extract_text_from_image(file_bytes: bytes) -> str:
 
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
+    t_start = time.perf_counter()
+    _log(f"=== /extract-text START: filename={file.filename} ===")
     content = await file.read()
+    t_read = time.perf_counter()
+    _log(f"[upload] file.read(): {(t_read-t_start)*1000:.0f}ms ({len(content)} bytes)")
     filename = (file.filename or "").lower()
 
     page_count = None
@@ -192,6 +226,7 @@ async def extract_text(file: UploadFile = File(...)):
         text, page_count, max_image_area_ratio = extract_text_from_pdf_fast(content)
         pre_ocr_chars = len(text)
         chars_per_page = (pre_ocr_chars / page_count) if page_count else 0
+        _log(f"[heuristic] pages={page_count}, chars={pre_ocr_chars}, chars_per_page={chars_per_page:.0f}, image_area_ratio={max_image_area_ratio:.3f}")
 
         if chars_per_page < 150:
             ocr_triggered = True
@@ -205,14 +240,18 @@ async def extract_text(file: UploadFile = File(...)):
                 f"chars_per_page={chars_per_page:.0f} < 500 AND "
                 f"image_area_ratio={max_image_area_ratio:.2f} > 0.2"
             )
+        _log(f"[heuristic] ocr_triggered={ocr_triggered}, reason={ocr_reason}")
 
         if ocr_triggered:
             if GEMINI_API_KEY:
+                _log("[dispatch] -> Gemini OCR")
                 try:
                     text = await ocr_pdf_with_gemini(content)
-                except Exception:
+                except Exception as e:
+                    _log(f"[dispatch] Gemini failed ({e}) -> falling back to Tesseract")
                     text = ocr_pdf_with_tesseract(content)
             else:
+                _log("[dispatch] -> Tesseract OCR (no GEMINI_API_KEY)")
                 text = ocr_pdf_with_tesseract(content)
     elif filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".tiff", ".bmp")):
         text = extract_text_from_image(content)
@@ -225,6 +264,7 @@ async def extract_text(file: UploadFile = File(...)):
             except Exception:
                 raise HTTPException(400, "Formato nao suportado. Use DOCX, PDF ou imagem.")
 
+    _log(f"=== /extract-text END: {(time.perf_counter()-t_start)*1000:.0f}ms total ===")
     return {
         "text": text,
         "char_count": len(text),
